@@ -48,7 +48,18 @@ interface AIFileAttachment {
   size: number;
 }
 
+interface PluginCapabilities {
+  storage?: "none" | "read" | "rw";
+  secrets?: "none" | "read" | "rw";
+  gateway?: boolean;
+  broadcast?: boolean;
+  subprocess?: boolean;
+  audit?: boolean;
+  telemetry?: boolean;
+}
+
 interface VibePlugin {
+  capabilities?: PluginCapabilities;
   name: string;
   version: string;
   description?: string;
@@ -77,6 +88,9 @@ interface VibePlugin {
 }
 
 interface HostServices {
+  telemetry?: {
+    emit: (name: string, payload?: Record<string, unknown>) => void;
+  };
   logger?: {
     info: (source: string, msg: string) => void;
     warn: (source: string, msg: string) => void;
@@ -276,6 +290,21 @@ interface ProviderAdapter {
 
 const PROVIDER_NAME = "minimax";
 const CLI_COMMAND = "mmx";
+/**
+ * Resolve CLI binary path with platform-correct extension.
+ * On Windows, Bun.spawn calls CreateProcess directly (no PATHEXT), so a bare
+ * name won't find `name.exe`/`name.cmd`. Bun.which searches PATH like the shell.
+ */
+function resolveCliBin(): string {
+  const found =
+    typeof Bun !== "undefined" && typeof Bun.which === "function"
+      ? Bun.which(CLI_COMMAND)
+      : null;
+  if (found) return found;
+  return process.platform === "win32" ? `${CLI_COMMAND}.exe` : CLI_COMMAND;
+}
+const CLI_BIN = resolveCliBin();
+
 const DISPLAY_NAME = "Minimax";
 // Anthropic-compatible base URL per
 // https://platform.minimax.io/docs/api-reference/text-anthropic-api
@@ -585,7 +614,7 @@ class MinimaxCliAdapter implements ProviderAdapter {
     const startTime = Date.now();
     const args = this.buildCliArgs(config, prompt);
 
-    const proc = Bun.spawn([CLI_COMMAND, ...args], {
+    const proc = Bun.spawn([CLI_BIN, ...args], {
       stdout: "pipe",
       stderr: "pipe",
       cwd: config.workingDirectory || process.cwd(),
@@ -640,7 +669,7 @@ class MinimaxCliAdapter implements ProviderAdapter {
 
   async healthCheck(): Promise<{ ok: boolean; message?: string }> {
     try {
-      const proc = Bun.spawnSync([CLI_COMMAND, "--version"], {
+      const proc = Bun.spawnSync([CLI_BIN, "--version"], {
         timeout: 5000,
         stdout: "pipe",
         stderr: "ignore",
@@ -1196,7 +1225,7 @@ class MinimaxProvider implements AIAgentProvider {
 
 function getCliVersion(): string | null {
   try {
-    const proc = Bun.spawnSync([CLI_COMMAND, "--version"], {
+    const proc = Bun.spawnSync([CLI_BIN, "--version"], {
       timeout: 5000,
       stdout: "pipe",
       stderr: "ignore",
@@ -1268,6 +1297,12 @@ function createPrereqsRoutes() {
 const provider = new MinimaxProvider();
 
 export const vibePlugin: VibePlugin = {
+  capabilities: {
+    secrets: "read",
+    subprocess: true,
+    gateway: false,
+    telemetry: true,
+  },
   name: "minimax",
   version: "1.0.0",
   description:
@@ -1286,6 +1321,7 @@ export const vibePlugin: VibePlugin = {
   createRoutes: () => createPrereqsRoutes(),
 
   onServerStart(_app, hostServices) {
+    hostServices?.telemetry?.emit("ai.provider.ready", { provider: "minimax" });
     if (hostServices) provider.setHostServices(hostServices);
   },
 
