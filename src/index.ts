@@ -73,6 +73,8 @@ type AILogType =
   | "error"
   | "metadata";
 
+type PermissionMode = "plan" | "acceptEdits" | "fullAuto";
+
 interface AISessionConfig {
   name: string;
   agentType: string;
@@ -81,7 +83,28 @@ interface AISessionConfig {
   temperature?: number;
   systemPrompt?: string;
   workingDirectory?: string;
+  /** Per-session autonomy level (CLI mode). Default: acceptEdits. */
+  permissionMode?: PermissionMode;
   providerConfig?: Record<string, unknown>;
+}
+
+/**
+ * Map the provider-agnostic permission mode to minimax/mmx CLI flags.
+ * `--yolo` enables shell + trust and auto-approves all tools (most permissive).
+ * The CLI has no granular non-interactive flag for plan/acceptEdits (those are
+ * TUI modes / runtime `/set approval_mode`), so they map to no flag (default
+ * behaviour asks before writes/shell). Unknown/undefined → acceptEdits.
+ * Targeted CLI: minimax-cli (Anthropic-compatible coding agent).
+ */
+export function permissionFlags(mode: PermissionMode | undefined): string[] {
+  switch (mode) {
+    case "fullAuto":
+      return ["--yolo"];
+    case "plan":
+    case "acceptEdits":
+    default:
+      return [];
+  }
 }
 
 interface AISession {
@@ -552,6 +575,7 @@ class MinimaxCliAdapter implements ProviderAdapter {
     const args: string[] = [];
     if (config.model) args.push("--model", config.model);
     if (config.systemPrompt) args.push("--system", config.systemPrompt);
+    args.push(...permissionFlags(config.permissionMode));
     args.push("--message", prompt);
     return args;
   }
