@@ -73,6 +73,8 @@ type AILogType =
   | "error"
   | "metadata";
 
+export type PermissionMode = "plan" | "acceptEdits" | "fullAuto";
+
 interface AISessionConfig {
   name: string;
   agentType: string;
@@ -81,7 +83,25 @@ interface AISessionConfig {
   temperature?: number;
   systemPrompt?: string;
   workingDirectory?: string;
+  /** Per-session autonomy level (CLI mode). Default: acceptEdits. */
+  permissionMode?: PermissionMode;
   providerConfig?: Record<string, unknown>;
+}
+
+/**
+ * Map permission mode to minimax CLI flags. `fullAuto` → `--yolo` (auto-approves
+ * all tools); all others → no flags (default asks). Defaults to acceptEdits. See
+ * the design spec for minimax's binary-autonomy limitation.
+ */
+export function permissionFlags(mode: PermissionMode | undefined): string[] {
+  switch (mode) {
+    case "fullAuto":
+      return ["--yolo"];
+    case "plan":
+    case "acceptEdits":
+    default:
+      return [];
+  }
 }
 
 interface AISession {
@@ -552,6 +572,7 @@ class MinimaxCliAdapter implements ProviderAdapter {
     const args: string[] = [];
     if (config.model) args.push("--model", config.model);
     if (config.systemPrompt) args.push("--system", config.systemPrompt);
+    args.push(...permissionFlags(config.permissionMode));
     args.push("--message", prompt);
     return args;
   }
@@ -799,7 +820,10 @@ class MinimaxProvider implements AIAgentProvider {
     };
 
     this.sessions.set(id, session);
-    this.log("info", `Session created: ${id} (${config.name})`);
+    this.log(
+      "info",
+      `Session created: ${id} (${config.name}, permissionMode=${config.permissionMode ?? "acceptEdits"})`,
+    );
 
     return this.toAISession(session);
   }
