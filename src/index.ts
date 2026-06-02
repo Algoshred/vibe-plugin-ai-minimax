@@ -570,15 +570,38 @@ class MinimaxSdkAdapter implements ProviderAdapter {
 
 class MinimaxCliAdapter implements ProviderAdapter {
   readonly mode: ProviderMode = "cli";
+  private readonly resolveApiKey: () => Promise<string | undefined>;
 
-  private buildCliArgs(config: AISessionConfig, prompt: string): string[] {
-    // The mmx CLI uses `--message <text>` for chat invocations.
-    const args: string[] = [];
+  constructor(resolveApiKey: () => Promise<string | undefined>) {
+    this.resolveApiKey = resolveApiKey;
+  }
+
+  /**
+   * Build args for `mmx text chat`. The mmx CLI authenticates from `--api-key`
+   * (or an interactive `mmx auth login`) — it does NOT read MINIMAX_API_KEY
+   * from the env — so the key is passed explicitly. `--region global` skips the
+   * region-detection preamble and `--output text` yields the plain answer.
+   */
+  private buildCliArgs(
+    config: AISessionConfig,
+    prompt: string,
+    apiKey: string,
+  ): string[] {
+    const args: string[] = ["text", "chat"];
     if (config.model) args.push("--model", config.model);
     if (config.systemPrompt) args.push("--system", config.systemPrompt);
-    args.push(...permissionFlags(config.permissionMode));
     args.push("--message", prompt);
+    args.push("--region", "global", "--output", "text", "--api-key", apiKey);
     return args;
+  }
+
+  /** Strip the mmx "Detecting region…" status preamble from captured output. */
+  private cleanOutput(raw: string): string {
+    return raw
+      .split("\n")
+      .filter((line) => !/^Detecting region/.test(line.trim()))
+      .join("\n")
+      .trim();
   }
 
   async sendPrompt(
@@ -593,7 +616,14 @@ class MinimaxCliAdapter implements ProviderAdapter {
     metadata?: Record<string, unknown>;
   }> {
     const startTime = Date.now();
-    const args = this.buildCliArgs(config, prompt);
+    const apiKey = (await this.resolveApiKey())?.trim();
+    if (!apiKey) {
+      throw new Error(
+        "MINIMAX_API_KEY is required for CLI mode. Set it in the AI provider " +
+          "credentials (stored in the agent config).",
+      );
+    }
+    const args = this.buildCliArgs(config, prompt, apiKey);
 
     const proc = Bun.spawn([CLI_BIN, ...args], {
       stdout: "pipe",
@@ -613,7 +643,7 @@ class MinimaxCliAdapter implements ProviderAdapter {
       );
     }
 
-    const content = stdout.trim() || stderr.trim();
+    const content = this.cleanOutput(stdout) || this.cleanOutput(stderr);
     // CLI does not provide real token counts; approximate from character lengths
     const inputTokens = Math.ceil(prompt.length / 4);
     const outputTokens = Math.ceil(content.length / 4);
@@ -786,7 +816,7 @@ class MinimaxProvider implements AIAgentProvider {
     this.adapter =
       mode === "sdk"
         ? new MinimaxSdkAdapter(() => this.resolveAuth())
-        : new MinimaxCliAdapter();
+        : new MinimaxCliAdapter(async () => (await this.resolveAuth())?.value);
     this.activeMode = mode;
     this.log("info", `Adapter initialized in ${mode} mode`);
     return this.adapter;
